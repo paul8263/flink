@@ -20,8 +20,13 @@ package org.apache.flink.table.planner.plan.nodes.exec;
 
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.table.delegation.Planner;
+import org.apache.flink.table.planner.delegation.PlannerBase;
+import org.apache.flink.table.planner.plan.nodes.exec.common.CommonExecExchange;
 import org.apache.flink.table.planner.plan.nodes.exec.visitor.ExecNodeVisitor;
-import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.table.types.logical.LogicalType;
+
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnore;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,79 +37,123 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * Base class for {@link ExecNode}.
  *
- * @param <P> The {@link Planner} that could translate the node into {@link Transformation}.
  * @param <T> The type of the elements that result from this node.
  */
-public abstract class ExecNodeBase<P extends Planner, T> implements ExecNode<T> {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public abstract class ExecNodeBase<T> implements ExecNode<T> {
 
-	private final String description;
-	private final List<ExecNode<?>> inputNodes;
-	private final List<ExecEdge> inputEdges;
-	private final RowType outputType;
+    /** The unique identifier for each ExecNode in the json plan. */
+    @JsonIgnore private final int id;
 
-	private transient Transformation<T> transformation;
+    @JsonIgnore private final String description;
 
-	protected ExecNodeBase(
-			List<ExecNode<?>> inputNodes,
-			List<ExecEdge> inputEdges,
-			RowType outputType,
-			String description) {
-		checkArgument(checkNotNull(inputNodes).size() == checkNotNull(inputEdges).size());
-		this.inputNodes = new ArrayList<>(inputNodes);
-		this.inputEdges = new ArrayList<>(inputEdges);
-		this.outputType = checkNotNull(outputType);
-		this.description = checkNotNull(description);
-	}
+    @JsonIgnore private final LogicalType outputType;
 
-	@Override
-	public String getDesc() {
-		return description;
-	}
+    @JsonIgnore private final List<InputProperty> inputProperties;
 
-	@Override
-	public RowType getOutputType() {
-		return outputType;
-	}
+    @JsonIgnore private List<ExecEdge> inputEdges;
 
-	@Override
-	public List<ExecNode<?>> getInputNodes() {
-		return inputNodes;
-	}
+    @JsonIgnore private transient Transformation<T> transformation;
 
-	@Override
-	public List<ExecEdge> getInputEdges() {
-		return inputEdges;
-	}
+    /** This is used to assign a unique ID to every ExecNode. */
+    private static Integer idCounter = 0;
 
-	@Override
-	public void replaceInputNode(int ordinalInParent, ExecNode<?> newInputNode) {
-		checkArgument(ordinalInParent >= 0 && ordinalInParent < inputNodes.size());
-		inputNodes.set(ordinalInParent, newInputNode);
-	}
+    /** Generate an unique ID for ExecNode. */
+    public static int getNewNodeId() {
+        idCounter++;
+        return idCounter;
+    }
 
-	@Override
-	public void replaceInputEdge(int ordinalInParent, ExecEdge newInputEdge) {
-		checkArgument(ordinalInParent >= 0 && ordinalInParent < inputEdges.size());
-		inputEdges.set(ordinalInParent, newInputEdge);
-	}
+    // used for json creator
+    protected ExecNodeBase(
+            int id,
+            List<InputProperty> inputProperties,
+            LogicalType outputType,
+            String description) {
+        this.id = id;
+        this.inputProperties = checkNotNull(inputProperties);
+        this.outputType = checkNotNull(outputType);
+        this.description = checkNotNull(description);
+    }
 
-	@SuppressWarnings("unchecked")
-	public Transformation<T> translateToPlan(Planner planner) {
-		if (transformation == null) {
-			transformation = translateToPlanInternal((P) planner);
-		}
-		return transformation;
-	}
+    protected ExecNodeBase(
+            List<InputProperty> inputProperties, LogicalType outputType, String description) {
+        this(getNewNodeId(), inputProperties, outputType, description);
+    }
 
-	/**
-	 * Internal method, translates this node into a Flink operator.
-	 *
-	 * @param planner The {@link Planner} that could translate the node into {@link Transformation}.
-	 */
-	protected abstract Transformation<T> translateToPlanInternal(P planner);
+    @Override
+    public final int getId() {
+        return id;
+    }
 
-	@Override
-	public void accept(ExecNodeVisitor visitor) {
-		visitor.visit(this);
-	}
+    @Override
+    public String getDescription() {
+        return description;
+    }
+
+    @Override
+    public LogicalType getOutputType() {
+        return outputType;
+    }
+
+    @Override
+    public List<InputProperty> getInputProperties() {
+        return inputProperties;
+    }
+
+    @Override
+    public List<ExecEdge> getInputEdges() {
+        return checkNotNull(
+                inputEdges,
+                "inputEdges should not null, please call `setInputEdges(List<ExecEdge>)` first.");
+    }
+
+    @Override
+    public void setInputEdges(List<ExecEdge> inputEdges) {
+        checkNotNull(inputEdges, "inputEdges should not be null.");
+        this.inputEdges = new ArrayList<>(inputEdges);
+    }
+
+    @Override
+    public void replaceInputEdge(int index, ExecEdge newInputEdge) {
+        List<ExecEdge> edges = getInputEdges();
+        checkArgument(index >= 0 && index < edges.size());
+        edges.set(index, newInputEdge);
+    }
+
+    @Override
+    public Transformation<T> translateToPlan(Planner planner) {
+        if (transformation == null) {
+            transformation = translateToPlanInternal((PlannerBase) planner);
+            if (this instanceof SingleTransformationTranslator) {
+                if (inputsContainSingleton()) {
+                    transformation.setParallelism(1);
+                    transformation.setMaxParallelism(1);
+                }
+            }
+        }
+        return transformation;
+    }
+
+    /** Internal method, translates this node into a Flink operator. */
+    protected abstract Transformation<T> translateToPlanInternal(PlannerBase planner);
+
+    @Override
+    public void accept(ExecNodeVisitor visitor) {
+        visitor.visit(this);
+    }
+
+    /** Whether there is singleton exchange node as input. */
+    protected boolean inputsContainSingleton() {
+        return getInputEdges().stream()
+                .map(ExecEdge::getSource)
+                .anyMatch(
+                        i ->
+                                i instanceof CommonExecExchange
+                                        && i.getInputProperties()
+                                                        .get(0)
+                                                        .getRequiredDistribution()
+                                                        .getType()
+                                                == InputProperty.DistributionType.SINGLETON);
+    }
 }

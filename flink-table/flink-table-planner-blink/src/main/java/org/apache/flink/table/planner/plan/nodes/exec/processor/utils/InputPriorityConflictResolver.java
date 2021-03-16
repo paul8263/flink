@@ -19,14 +19,14 @@
 package org.apache.flink.table.planner.plan.nodes.exec.processor.utils;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.transformations.ShuffleMode;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecEdge;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
+import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
+import org.apache.flink.table.planner.plan.nodes.exec.batch.BatchExecExchange;
 import org.apache.flink.table.planner.plan.nodes.exec.visitor.AbstractExecNodeExactlyOnceVisitor;
-import org.apache.flink.table.planner.plan.nodes.physical.batch.BatchExecExchange;
-import org.apache.flink.table.planner.plan.trait.FlinkRelDistribution;
-
-import org.apache.calcite.rel.RelNode;
+import org.apache.flink.table.types.logical.RowType;
 
 import java.util.Collections;
 import java.util.List;
@@ -34,115 +34,144 @@ import java.util.List;
 /**
  * Subclass of the {@link InputPriorityGraphGenerator}.
  *
- * <p>This class resolve conflicts by inserting a {@link BatchExecExchange} into the conflicting input.
+ * <p>This class resolve conflicts by inserting a {@link BatchExecExchange} into the conflicting
+ * input.
  */
 @Internal
 public class InputPriorityConflictResolver extends InputPriorityGraphGenerator {
 
-	private final ShuffleMode shuffleMode;
+    private final ShuffleMode shuffleMode;
+    private final Configuration configuration;
 
-	/**
-	 * Create a {@link InputPriorityConflictResolver} for the given {@link ExecNode} graph.
-	 *
-	 * @param roots the first layer of nodes on the output side of the graph
-	 * @param safeDamBehavior when checking for conflicts we'll ignore the edges with
-	 *                        {@link ExecEdge.DamBehavior} stricter or equal than this
-	 * @param shuffleMode when a conflict occurs we'll insert an {@link BatchExecExchange} node
-	 * 	                  with this shuffleMode to resolve conflict
-	 */
-	public InputPriorityConflictResolver(
-			List<ExecNode<?>> roots,
-			ExecEdge.DamBehavior safeDamBehavior,
-			ShuffleMode shuffleMode) {
-		super(roots, Collections.emptySet(), safeDamBehavior);
-		this.shuffleMode = shuffleMode;
-	}
+    /**
+     * Create a {@link InputPriorityConflictResolver} for the given {@link ExecNode} graph.
+     *
+     * @param roots the first layer of nodes on the output side of the graph
+     * @param safeDamBehavior when checking for conflicts we'll ignore the edges with {@link
+     *     InputProperty.DamBehavior} stricter or equal than this
+     * @param shuffleMode when a conflict occurs we'll insert an {@link BatchExecExchange} node with
+     *     this shuffleMode to resolve conflict
+     */
+    public InputPriorityConflictResolver(
+            List<ExecNode<?>> roots,
+            InputProperty.DamBehavior safeDamBehavior,
+            ShuffleMode shuffleMode,
+            Configuration configuration) {
+        super(roots, Collections.emptySet(), safeDamBehavior);
+        this.shuffleMode = shuffleMode;
+        this.configuration = configuration;
+    }
 
-	public void detectAndResolve() {
-		createTopologyGraph();
-	}
+    public void detectAndResolve() {
+        createTopologyGraph();
+    }
 
-	@Override
-	protected void resolveInputPriorityConflict(ExecNode<?> node, int higherInput, int lowerInput) {
-		ExecNode<?> higherNode = node.getInputNodes().get(higherInput);
-		ExecNode<?> lowerNode = node.getInputNodes().get(lowerInput);
-		if (lowerNode instanceof BatchExecExchange) {
-			BatchExecExchange exchange = (BatchExecExchange) lowerNode;
-			if (isConflictCausedByExchange(higherNode, exchange)) {
-				// special case: if exchange is exactly the reuse node,
-				// we should split it into two nodes
-				BatchExecExchange newExchange = exchange.copy(
-					exchange.getTraitSet(),
-					exchange.getInput(),
-					exchange.getDistribution());
-				newExchange.setRequiredShuffleMode(shuffleMode);
-				// TODO remove this later
-				newExchange.setInputNodes(exchange.getInputNodes());
-				node.replaceInputNode(lowerInput, newExchange);
-			} else {
-				exchange.setRequiredShuffleMode(shuffleMode);
-			}
-		} else {
-			node.replaceInputNode(lowerInput, createExchange(node, lowerInput));
-		}
-	}
+    @Override
+    protected void resolveInputPriorityConflict(ExecNode<?> node, int higherInput, int lowerInput) {
+        ExecNode<?> higherNode = node.getInputEdges().get(higherInput).getSource();
+        ExecNode<?> lowerNode = node.getInputEdges().get(lowerInput).getSource();
+        final ExecNode<?> newNode;
+        if (lowerNode instanceof BatchExecExchange) {
+            BatchExecExchange exchange = (BatchExecExchange) lowerNode;
+            InputProperty inputEdge = exchange.getInputProperties().get(0);
+            InputProperty inputProperty =
+                    InputProperty.builder()
+                            .requiredDistribution(inputEdge.getRequiredDistribution())
+                            .priority(inputEdge.getPriority())
+                            .damBehavior(getDamBehavior())
+                            .build();
+            if (isConflictCausedByExchange(higherNode, exchange)) {
+                // special case: if exchange is exactly the reuse node,
+                // we should split it into two nodes
+                BatchExecExchange newExchange =
+                        new BatchExecExchange(
+                                inputProperty, (RowType) exchange.getOutputType(), "Exchange");
+                newExchange.setRequiredShuffleMode(shuffleMode);
+                newExchange.setInputEdges(exchange.getInputEdges());
+                newNode = newExchange;
+            } else {
+                // create new BatchExecExchange with new inputProperty
+                BatchExecExchange newExchange =
+                        new BatchExecExchange(
+                                inputProperty,
+                                (RowType) exchange.getOutputType(),
+                                exchange.getDescription());
+                newExchange.setRequiredShuffleMode(shuffleMode);
+                newExchange.setInputEdges(exchange.getInputEdges());
+                newNode = newExchange;
+            }
+        } else {
+            newNode = createExchange(node, lowerInput);
+        }
 
-	private boolean isConflictCausedByExchange(ExecNode<?> higherNode, BatchExecExchange lowerNode) {
-		// check if `lowerNode` is the ancestor of `higherNode`,
-		// if yes then conflict is caused by `lowerNode`
-		ConflictCausedByExchangeChecker checker = new ConflictCausedByExchangeChecker(lowerNode);
-		checker.visit(higherNode);
-		return checker.found;
-	}
+        ExecEdge newEdge = ExecEdge.builder().source(newNode).target(node).build();
+        node.replaceInputEdge(lowerInput, newEdge);
+    }
 
-	private BatchExecExchange createExchange(ExecNode<?> node, int idx) {
-		RelNode inputRel = (RelNode) node.getInputNodes().get(idx);
+    private boolean isConflictCausedByExchange(
+            ExecNode<?> higherNode, BatchExecExchange lowerNode) {
+        // check if `lowerNode` is the ancestor of `higherNode`,
+        // if yes then conflict is caused by `lowerNode`
+        ConflictCausedByExchangeChecker checker = new ConflictCausedByExchangeChecker(lowerNode);
+        checker.visit(higherNode);
+        return checker.found;
+    }
 
-		FlinkRelDistribution distribution;
-		ExecEdge.RequiredShuffle requiredShuffle = node.getInputEdges().get(idx).getRequiredShuffle();
-		if (requiredShuffle.getType() == ExecEdge.ShuffleType.HASH) {
-			distribution = FlinkRelDistribution.hash(requiredShuffle.getKeys(), true);
-		} else if (requiredShuffle.getType() == ExecEdge.ShuffleType.BROADCAST) {
-			// should not occur
-			throw new IllegalStateException(
-				"Trying to resolve input priority conflict on broadcast side. This is not expected.");
-		} else if (requiredShuffle.getType() == ExecEdge.ShuffleType.SINGLETON) {
-			distribution = FlinkRelDistribution.SINGLETON();
-		} else {
-			distribution = FlinkRelDistribution.ANY();
-		}
+    private BatchExecExchange createExchange(ExecNode<?> node, int idx) {
+        ExecNode<?> inputNode = node.getInputEdges().get(idx).getSource();
+        InputProperty inputProperty = node.getInputProperties().get(idx);
+        InputProperty.RequiredDistribution requiredDistribution =
+                inputProperty.getRequiredDistribution();
+        if (requiredDistribution.getType() == InputProperty.DistributionType.BROADCAST) {
+            // should not occur
+            throw new IllegalStateException(
+                    "Trying to resolve input priority conflict on broadcast side. This is not expected.");
+        }
 
-		BatchExecExchange exchange = new BatchExecExchange(
-			inputRel.getCluster(),
-			inputRel.getTraitSet().replace(distribution),
-			inputRel,
-			distribution);
-		exchange.setRequiredShuffleMode(shuffleMode);
-		// TODO remove this later
-		exchange.setInputNodes(Collections.singletonList(node.getInputNodes().get(idx)));
-		return exchange;
-	}
+        InputProperty newInputProperty =
+                InputProperty.builder()
+                        .requiredDistribution(requiredDistribution)
+                        .priority(inputProperty.getPriority())
+                        .damBehavior(getDamBehavior())
+                        .build();
+        BatchExecExchange exchange =
+                new BatchExecExchange(
+                        newInputProperty, (RowType) inputNode.getOutputType(), "Exchange");
+        exchange.setRequiredShuffleMode(shuffleMode);
+        ExecEdge execEdge = ExecEdge.builder().source(inputNode).target(exchange).build();
+        exchange.setInputEdges(Collections.singletonList(execEdge));
+        return exchange;
+    }
 
-	private static class ConflictCausedByExchangeChecker extends AbstractExecNodeExactlyOnceVisitor {
+    private static class ConflictCausedByExchangeChecker
+            extends AbstractExecNodeExactlyOnceVisitor {
 
-		private final BatchExecExchange exchange;
-		private boolean found;
+        private final BatchExecExchange exchange;
+        private boolean found;
 
-		private ConflictCausedByExchangeChecker(BatchExecExchange exchange) {
-			this.exchange = exchange;
-		}
+        private ConflictCausedByExchangeChecker(BatchExecExchange exchange) {
+            this.exchange = exchange;
+        }
 
-		@Override
-		protected void visitNode(ExecNode<?> node) {
-			if (node == exchange) {
-				found = true;
-			}
-			for (ExecNode<?> inputNode : node.getInputNodes()) {
-				visit(inputNode);
-				if (found) {
-					return;
-				}
-			}
-		}
-	}
+        @Override
+        protected void visitNode(ExecNode<?> node) {
+            if (node == exchange) {
+                found = true;
+            }
+            for (ExecEdge inputEdge : node.getInputEdges()) {
+                visit(inputEdge.getSource());
+                if (found) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private InputProperty.DamBehavior getDamBehavior() {
+        if (BatchExecExchange.getShuffleMode(configuration, shuffleMode) == ShuffleMode.BATCH) {
+            return InputProperty.DamBehavior.BLOCKING;
+        } else {
+            return InputProperty.DamBehavior.PIPELINED;
+        }
+    }
 }
