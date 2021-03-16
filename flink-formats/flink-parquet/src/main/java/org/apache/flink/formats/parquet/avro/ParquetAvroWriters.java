@@ -90,30 +90,25 @@ public class ParquetAvroWriters {
                 .withDataModel(dataModel)
                 .build();
     }
-		return AvroParquetWriter.<T>builder(out)
-				.withSchema(schema)
-				.withDataModel(dataModel)
-				.build();
-	}
 
-	private static <T> ParquetWriter<T> createAvroParquetWriter(
-		String schemaString,
-		GenericData dataModel,
-		CompressionCodecName compressionCodecName,
-		OutputFile out) throws IOException {
+    private static <T> ParquetWriter<T> createAvroParquetWriter(
+            String schemaString,
+            GenericData dataModel,
+            CompressionCodecName compressionCodecName,
+            OutputFile out) throws IOException {
 
-		if (null == compressionCodecName) {
-			return createAvroParquetWriter(schemaString, dataModel, out);
-		}
+        if (null == compressionCodecName) {
+            return createAvroParquetWriter(schemaString, dataModel, out);
+        }
 
-		final Schema schema = new Schema.Parser().parse(schemaString);
+        final Schema schema = new Schema.Parser().parse(schemaString);
 
-		return AvroParquetWriter.<T>builder(out)
-			.withSchema(schema)
-			.withDataModel(dataModel)
-			.withCompressionCodec(compressionCodecName)
-			.build();
-	}
+        return AvroParquetWriter.<T>builder(out)
+                .withSchema(schema)
+                .withDataModel(dataModel)
+                .withCompressionCodec(compressionCodecName)
+                .build();
+    }
 
     // ------------------------------------------------------------------------
 

@@ -96,35 +96,35 @@ public class ParquetAvroStreamingFileSinkITCase extends AbstractTestBase {
     }
 
     @Test
-    public void testWriteParquetAvroGeneric() throws Exception {
-	@Test
-	public void testWriteParquetAvroSpecificWithCompression() throws Exception {
+    public void testWriteParquetAvroSpecificWithCompression() throws Exception {
 
-		final File folder = TEMPORARY_FOLDER.newFolder();
+        final File folder = TEMPORARY_FOLDER.newFolder();
 
-		final List<Address> data = Arrays.asList(
-			new Address(1, "a", "b", "c", "12345"),
-			new Address(2, "p", "q", "r", "12345"),
-			new Address(3, "x", "y", "z", "12345")
-		);
+        final List<Address> data = Arrays.asList(
+                new Address(1, "a", "b", "c", "12345"),
+                new Address(2, "p", "q", "r", "12345"),
+                new Address(3, "x", "y", "z", "12345")
+        );
 
-		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setParallelism(1);
-		env.enableCheckpointing(100);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        env.enableCheckpointing(100);
 
-		DataStream<Address> stream = env.addSource(
-			new FiniteTestSource<>(data), TypeInformation.of(Address.class));
+        DataStream<Address> stream = env.addSource(
+                new FiniteTestSource<>(data), TypeInformation.of(Address.class));
 
-		stream.addSink(
-			StreamingFileSink.forBulkFormat(
-				Path.fromLocalFile(folder),
-				ParquetAvroWriters.forSpecificRecord(Address.class, CompressionCodecName.GZIP))
-				.build());
+        stream.addSink(
+                StreamingFileSink.forBulkFormat(
+                        Path.fromLocalFile(folder),
+                        ParquetAvroWriters.forSpecificRecord(
+                                Address.class,
+                                CompressionCodecName.GZIP))
+                        .build());
 
-		env.execute();
+        env.execute();
 
-		validateResults(folder, SpecificData.get(), data);
-	}
+        validateResults(folder, SpecificData.get(), data);
+    }
 
 	@Test
 	public void testWriteParquetAvroGeneric() throws Exception {
@@ -158,8 +158,6 @@ public class ParquetAvroStreamingFileSinkITCase extends AbstractTestBase {
         validateResults(folder, SpecificData.get(), expected);
     }
 
-    @Test
-    public void testWriteParquetAvroReflect() throws Exception {
 	@Test
 	public void testWriteParquetAvroGenericWithCompression() throws Exception {
 
