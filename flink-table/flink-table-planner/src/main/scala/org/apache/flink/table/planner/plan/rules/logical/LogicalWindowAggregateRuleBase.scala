@@ -84,7 +84,7 @@ abstract class LogicalWindowAggregateRuleBase(description: String)
 
     val newProject = builder
       .push(project.getInput)
-      .project(project.getProjects.updated(windowExprIdx, inAggGroupExpression))
+      .project(project.getProjects.updated(windowExprIdx, inAggGroupExpression), project.getRowType.getFieldNames)
       .build()
 
     // translate window against newProject.
