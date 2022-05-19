@@ -19,9 +19,10 @@ package org.apache.flink.table.planner.plan.nodes.logical
 
 import org.apache.flink.table.api.ValidationException
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
+import org.apache.flink.table.planner.typeutils.RowTypeUtils
 
 import org.apache.calcite.plan._
-import org.apache.calcite.rel.`type`.RelDataType
+import org.apache.calcite.rel.`type`.{RelDataType, RelDataTypeFieldImpl}
 import org.apache.calcite.rel.{RelCollation, RelCollationTraitDef, RelNode}
 import org.apache.calcite.rel.convert.ConverterRule
 import org.apache.calcite.rel.core.Window
@@ -59,7 +60,6 @@ class FlinkLogicalOverAggregate(
       getRowType,
       windowGroups)
   }
-
 }
 
 class FlinkLogicalOverAggregateConverter
@@ -98,12 +98,29 @@ class FlinkLogicalOverAggregateConverter
         }
     }
 
+    val rowType = {
+      val cluster = rel.getCluster
+      val typeFactory = cluster.getRexBuilder.getTypeFactory
+      val typeBuilder = typeFactory.builder()
+      newInput.getRowType.getFieldList.foreach(
+        field => {
+          if (typeBuilder.nameExists(field.getName)) {
+            val newFieldName =
+              RowTypeUtils.getUniqueName(field.getName, newInput.getRowType.getFieldNames)
+            typeBuilder.add(new RelDataTypeFieldImpl(newFieldName, field.getIndex, field.getType))
+          } else {
+            typeBuilder.add(field)
+          }
+        })
+      typeBuilder.build()
+    }
+
     new FlinkLogicalOverAggregate(
       rel.getCluster,
       traitSet,
       newInput,
       window.constants,
-      window.getRowType,
+      rowType,
       window.groups)
   }
 }
