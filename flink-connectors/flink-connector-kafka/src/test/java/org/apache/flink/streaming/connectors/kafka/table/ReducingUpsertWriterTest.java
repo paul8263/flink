@@ -261,6 +261,45 @@ public class ReducingUpsertWriterTest {
         compareCompactedResult(expected, writer.rowDataCollectors);
     }
 
+    @Test
+    public void testWriteDataWithNullTimestamp() throws Exception {
+        final MockedSinkWriter writer = new MockedSinkWriter();
+        final ReducingUpsertWriter<?> bufferedWriter = createBufferedWriter(writer);
+
+        GenericRowData rowDataWithNullTimestamp =
+                GenericRowData.ofKind(
+                        INSERT,
+                        1001,
+                        StringData.fromString("Java public for dummies"),
+                        StringData.fromString("Tan Ah Teck"),
+                        11.11,
+                        11,
+                        null);
+
+        bufferedWriter.write(
+                rowDataWithNullTimestamp,
+                new org.apache.flink.api.connector.sink2.SinkWriter.Context() {
+                    @Override
+                    public long currentWatermark() {
+                        throw new UnsupportedOperationException("Not implemented.");
+                    }
+
+                    @Override
+                    public Long timestamp() {
+                        return null;
+                    }
+                });
+
+        bufferedWriter.flush(true);
+
+        HashMap<Integer, List<RowData>> expected = new HashMap<>();
+        expected.put(1001, Collections.singletonList(rowDataWithNullTimestamp));
+
+        compareCompactedResult(expected, writer.rowDataCollectors);
+
+        writer.rowDataCollectors.clear();
+    }
+
     private void compareCompactedResult(
             Map<Integer, List<RowData>> expected, List<RowData> actual) {
         Map<Integer, List<RowData>> actualMap = new HashMap<>();
